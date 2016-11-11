@@ -1,0 +1,311 @@
+---
+title: "Project"
+subtitle: EU frameworks FP1 - FP7 and Horizon2020 funded research projects
+output:
+  html_document: 
+    toc: yes
+  html_notebook: default
+---
+
+# Introduction
+Here we analyse a dataset containing European Union (EU) funded research projects under frameworks
+
+* [FP1](https://data.europa.eu/euodp/en/data/dataset/fp1-cordis) (1984-1987),
+* [FP2](https://data.europa.eu/euodp/en/data/dataset/cordis-fp2) (1987-1991),
+* [FP3](https://data.europa.eu/euodp/en/data/dataset/cordis-fp3) (1990-1994),
+* [FP4](https://data.europa.eu/euodp/en/data/dataset/cordisfp4projects) (1994-1998),
+* [FP5](https://data.europa.eu/euodp/en/data/dataset/cordisfp5projects) (1998-2002),
+* [FP6](https://data.europa.eu/euodp/en/data/dataset/cordisfp6projects) (2002-2006),
+* [FP7](https://data.europa.eu/euodp/en/data/dataset/cordisfp7projects) (2007-2013), 
+* [Horizon2020](https://data.europa.eu/euodp/en/data/dataset/cordisH2020projects) (2014-2020).
+
+Coordinates for countries are taken [here](https://developers.google.com/public-data/docs/canonical/countries_csv). 
+
+The subject (SIC) codes are taken [here](https://data.europa.eu/euodp/en/data/dataset/cordisref-data)
+
+# Data import
+```{r, error=FALSE, message=FALSE, warning=FALSE}
+#Load some libraries
+library(tidyverse) #Data handling, plotting
+library(stringr) #String manipulation
+library(tm) #Text mining functionality
+#library(plotly) #Interactive ggplots
+library(tidytext) #Text manipulation
+library(SnowballC) #Word stemming
+#library(widyr) #Pairwise correlations etc
+library(maps) #Drawing maps
+library(geosphere) #Computing great cricle lines
+library(igraph) #Drawing graphs
+library(ggraph) #Drawing graphs
+#library(irlba) #Truncated svd on large/sparse matrices
+library(wordcloud) #Wordclouds
+#library(lvplot)
+library(lubridate)
+library(magrittr)
+```
+
+Read in the datasets using `read_csv2` because the files are `;`-delimited. This is apparently common in Europe because `,` is used as decimal delimiter. Each dataset needs some custom modifications when importing but by using readr we can get them to common shape with little trouble
+
+```{r, message=FALSE}
+fp1 <- read_csv2("../dat/eu/fp1.csv", 
+                 col_types = cols(startDate = col_date(format = "%d/%m/%Y"),
+                                  endDate = col_date(format = "%d/%m/%Y"),
+                                  totalCost = col_integer(),
+                                  ecMaxContribution = col_integer())) %>%
+  select(rcn, status, title, startDate, endDate, objective, 
+         cost = totalCost, contr = ecMaxContribution, fundingScheme, coordinator, 
+         coordinatorCountry, participants, participantCountries, subjects)
+
+fp2 <- read_csv2("../dat/eu/fp2.csv") %>% 
+  select(rcn, status, title, startDate, endDate, objective, 
+         cost = totalCost, contr = ecMaxContribution, fundingScheme, coordinator, 
+         coordinatorCountry, participants, participantCountries, subjects)
+
+fp3 <- read_csv2("../dat/eu/fp3.csv") %>% 
+  select(rcn, status, title, startDate, endDate, objective, 
+         cost = totalCost, contr = ecMaxContribution, fundingScheme, coordinator, 
+         coordinatorCountry, participants, participantCountries, subjects)
+
+fp4 <- read_csv2("../dat/eu/fp4.csv", 
+                 col_types = cols(
+                   `Start Date` = col_date(format = "%d/%m/%Y"),
+                   `End Date` = col_date(format = "%d/%m/%Y"))
+                 ) %>%
+  select(rcn = RCN, status = Status, title = `Project Title`, 
+         startDate = `Start Date`, endDate = `End Date`, objective = Objectives, 
+         cost = `Total Cost`, contr = `Total Funding`, fundingScheme = `Contract Type`, 
+         coordinatorCountry = `Coordinator Country`, 
+         participantCountries = `Contractor Country`, subjects = Subject) %>%
+  mutate(coordinator = parse_character(NA), participants = parse_character(NA))
+
+fp5 <- read_csv2("../dat/eu/fp5.csv") %>%
+  select(rcn, status, title, startDate, endDate, objective, 
+         cost = totalCost, contr = ecMaxContribution, fundingScheme, coordinator, 
+         coordinatorCountry, participants, participantCountries, subjects)
+
+fp6   <- read_csv2("../dat/eu/fp6.csv") %>%
+  select(rcn, status, title, startDate, endDate, objective, 
+         cost = totalCost, contr = ecMaxContribution, fundingScheme, coordinator, 
+         coordinatorCountry, participants, participantCountries, subjects)
+
+fp7   <- read_csv2("../dat/eu/fp7.csv") %>%
+  select(rcn, status, title, startDate, endDate, objective, 
+         cost = totalCost, contr = ecMaxContribution, fundingScheme, coordinator, 
+         coordinatorCountry, participants, participantCountries, subjects)
+
+h2020 <- read_csv2("../dat/eu/h2020.csv") %>%
+  select(rcn, status, title, startDate, endDate, objective, 
+         cost = totalCost, contr = ecMaxContribution, fundingScheme, coordinator, 
+         coordinatorCountry, participants, participantCountries, subjects)
+
+projects <- bind_rows(fp1, fp2, fp3, fp4, fp5, fp6, fp7, h2020) %>%
+  arrange(startDate) %>%
+  mutate(year = year(startDate),
+         ratio = contr/cost)
+
+#Clean up
+rm(fp1, fp2, fp3, fp4, fp5, fp6, fp7, h2020)
+
+#Change some EU codes into ISO codes
+projects <- projects %>%
+  mutate(coordinatorCountry = str_replace_all(coordinatorCountry, "UK", "GB")) %>%  #UK
+  mutate(coordinatorCountry = str_replace_all(coordinatorCountry, "EL", "GR")) %>% #Greece
+  mutate(coordinatorCountry = str_replace_all(coordinatorCountry, "KO", "XK")) %>% #Kosovo
+  mutate(coordinatorCountry = str_replace_all(coordinatorCountry, "CS", "RS")) %>%#Serbia
+  mutate(participantCountries = str_replace_all(participantCountries, "UK", "GB")) %>%  #UK
+  mutate(participantCountries = str_replace_all(participantCountries, "EL", "GR")) %>% #Greece
+  mutate(participantCountries = str_replace_all(participantCountries, "KO", "XK")) %>% #Kosovo
+  mutate(participantCountries = str_replace_all(participantCountries, "CS", "RS"))
+
+#Country coordinates
+# na="" necessary, otherwise country code for Namibia (NA) is interpreted as <NA>
+countries <- read_tsv("../dat/eu/countries.csv", na = "")
+
+#subjects sic codes
+sic <- read_csv2("../dat/eu/sic_codes.csv", na = "") %>% 
+  filter(language == "en") %>%
+  select(-language) %>%
+  mutate(title = tolower(title),
+         code = tolower(code))
+
+```
+
+Glimpse the dataset
+```{r}
+projects %>% glimpse
+```
+
+#Data cleaning, imputation
+Let's look at the individual variables
+
+* rcn
+```{r}
+#--- rcn ---
+#All projects have unique id
+projects %$% any(is.na(rcn)) #FALSE
+projects %>% count(rcn) %>% filter(n > 1)
+```
+
+* status
+```{r}
+#--- status ---
+projects %>% count(status)
+```
+
+* title
+```{r}
+projects %>% summarise(n = sum(is.na(title)))
+projects %>% count(title, sort = T) %>% filter(n > 1)
+```
+
+There seems to be many projects with the same title
+
+* start and end date
+```{r}
+projects %>% 
+  mutate(time_diff = interval(startDate, endDate) / duration(num = 1, units = "years")) %>%
+  filter(time_diff > 0 & !is.na(time_diff)) %>%
+  filter(time_diff < 10) %>%
+  ggplot(aes(time_diff)) +
+  geom_histogram(binwidth = 0.1)
+```
+
+There are 4 rows with `time_diff <= 0` and many rows with either date `NA`. Overall many projects have unrealistic end date far in the future. Let's visualise that
+
+```{r}
+projects %>%
+  ggplot(aes(endDate)) + geom_histogram()
+```
+```{r}
+projects %>%
+  filter(endDate > "2022-01-01") %>%
+  ggplot(aes(endDate)) + 
+  geom_histogram()
+```
+
+I would say that end dates above `2022-01-01` are not trustworthy. Should look into it, because there are many such
+
+
+
+
+#Data exploration
+Let's examine the correlation between project duration and the cost. Let's just look at projects that run from 0.1 to 10 years and cost more than 100 units
+```{r}
+projects %>% 
+  mutate(time_diff = interval(startDate, endDate) / duration(num = 1, units = "years")) %>%
+  filter(between(time_diff, 0.1, 10)) %>%
+  filter(between(cost, 1e2, 1e9)) %>%
+  ggplot(aes(time_diff, cost)) +
+  geom_point(alpha=0.1) + 
+  geom_smooth(method="lm") +
+  scale_y_log10() + 
+  scale_x_log10()
+```
+
+On a log-log scale there seems to be a linear relationship between cost and duration. It is not very surprising.
+
+How does the ratio of contribution to cost vary over time
+```{r}
+projects %>% 
+  filter(ratio < 1) %>%
+  ggplot(aes(startDate, ratio)) +
+  geom_point(alpha=0.1)
+```
+
+
+Median contribution and cost over the years
+
+```{r}
+projects %>%
+  mutate(year = format(startDate, "%Y")) %>%
+  filter(!is.na(startDate)) %>%
+  filter(cost < 1e7) %>%
+  group_by(year) %>%
+  summarise(cost = median(cost, na.rm=T),
+            contr = median(contr, na.rm=T)) %>%
+  gather(key = "type", value = "value", cost, contr) %>%
+  ggplot(aes(year, value, fill = type)) +
+  geom_bar(stat="Identity", position = position_dodge()) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+```
+
+# Mapping the collaboration network at country level
+First let's create a data frame for connections by separating the participant countries
+
+```{r}
+cnx <- projects %>%
+  unnest_tokens(destination, participantCountries, to_lower = FALSE) %>%
+  filter(coordinatorCountry != destination) %>% 
+  left_join(countries, by = c(coordinatorCountry = "country")) %>%
+  left_join(countries, by = c(destination = "country")) %>%
+  select(-name.x, -name.y) %>%
+  group_by(coordinatorCountry, destination) %>%
+  summarise(n= n(),
+            lon1 = unique(longitude.x),
+            lat1 = unique(latitude.x),
+            lon2 = unique(longitude.y),
+            lat2 = unique(latitude.y)) %>%
+  arrange(desc(n)) %>%
+  filter(destination != "F") %>% #Probably FR but this connection already exists
+  filter(destination != "YU")#Probably former Yugoslavia but let's just drop it now
+
+```
+
+Now that we have our connections let's visualise them on a graph
+
+```{r}
+cnx %>%
+  filter(n > 500) %>%
+  # filter(coordinatorCountry %in% eu) %>%
+  # filter(destination %in% eu) %>%
+  graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n, edge_width=n), show.legend = FALSE) +
+  geom_node_point(color = "skyblue", size = 5) +
+  geom_node_text(aes(label = name), size = 2.5, color = "black") +
+  theme_void()
+```
+
+Connections as great circle distances
+
+```{r}
+cnx
+
+color2hex <- function(color, alpha_hex = "FF"){
+  # Turns a color's R name into its hex representation 
+  c <- col2rgb(color)
+  sprintf("#%02X%02X%02X%s", c[1], c[2], c[3], toupper(alpha_hex))
+}
+
+
+map("world", col="#292929", fill=TRUE, bg="#000000", lwd=0.05)
+
+#For alpha gradient
+pal <- colorRampPalette(c("#111111", "#aaaaaa")) #Does the interpolation
+alpha_vals <- str_extract(pal(256), ".{2}$") #Extract 1 byte
+
+#replace the alpha byte with the interpolated values
+colors <- str_replace(color2hex("springgreen", alpha="FF"), ".{2}$", alpha_vals)
+alpha_factor <- max(cnx$n)
+
+for(i in 1:nrow(cnx)){
+  #Interpolate the great circle lines
+  inter2 <- gcIntermediate(c(cnx$lon1[i],
+                             cnx$lat1[i]),
+                           c(cnx$lon2[i],
+                             cnx$lat2[i]), n=100,
+                           addStartEnd=TRUE,
+                           breakAtDateLine = TRUE)
+  
+  colindex <- round( (cnx$n[i] / alpha_factor) * (length(colors)-1) ) + 1
+  if(is.list(inter2)){
+    lapply(inter2, function(x) lines(x, col=colors[colindex], lwd=0.3))
+  }else{
+    lines(inter2, col=colors[colindex], lwd=0.3)
+  }
+  lines(c(cnx$lon1[i], cnx$lon2[i]),
+        c(cnx$lat1[i], cnx$lat2[i]), col=colors[colindex], lwd=0.3)
+}
+```
+
